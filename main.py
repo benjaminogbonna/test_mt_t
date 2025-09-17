@@ -185,19 +185,19 @@ async def upload_pdf(file: UploadFile = File(...)):
 # ---------- Ask endpoint ----------
 
 class AskRequest(BaseModel):
-    question: str
-    top_k: int = 3
+    user_prompt: str
+    top_k: int = 5
     temperature: float = 0.2
 
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    question = req.question.strip()
-    if not question:
-        raise HTTPException(status_code=400, detail="Question cannot be empty")
+    user_prompt = req.user_prompt.strip()
+    if not user_prompt:
+        raise HTTPException(status_code=400, detail="User prompt cannot be empty")
 
     # Embed question
-    q_resp = client.embeddings.create(model=EMBEDDING_MODEL, input=question)
+    q_resp = client.embeddings.create(model=EMBEDDING_MODEL, input=user_prompt)
     q_emb = q_resp.data[0].embedding
 
     # Query Pinecone
@@ -227,14 +227,17 @@ def ask(req: AskRequest):
 
     GENERAL RULES:
     - Keep a friendly, encouraging tone while being professional
+    - Do not, and never answer questions that are not math related.    
+    - Your responses should strictly be math based. 
+    - If the request is unclear or potentially harmful, respond with a polite message refusing to answer.
     - Use proper markdown formatting for better readability
-    - If you're not sure what the student wants, ask for clarification
+    - If the question is unclear, or if you're not sure what the student wants, ask for clarification
     - Keep responses conversational and focused on the student's needs
     - When responding to LaTeX mathematical expressions (wrapped in $$), acknowledge the mathematical notation and work with it appropriately.
 
     """
 
-    user_msg = f"Question: {question}\n\nContext:\n{context}\n\nPlease answer with step-by-step reasoning."
+    user_msg = f"Question: {user_prompt}\n\nContext:\n{context}\n\nPlease answer with step-by-step reasoning."
 
     try:
         completion = client.chat.completions.create(
@@ -262,5 +265,4 @@ def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
+    uvicorn.run('main:app', host="0.0.0.0", port=8000, reload=True)
