@@ -3,6 +3,7 @@ import glob
 import pickle
 import time
 import math
+from threading import Lock
 from typing import List, Dict, Any
 from dotenv import load_dotenv
 
@@ -21,7 +22,7 @@ DOCUMENTS_DIR = "./documents"
 os.makedirs(DOCUMENTS_DIR, exist_ok=True)
 
 EMBEDDING_MODEL = "text-embedding-3-small"
-LLM_MODEL = "gpt-4o-mini"
+LLM_MODEL = "gpt-4o"
 EMBEDDING_DIM = 1536
 CHUNK_SIZE_WORDS = 500
 CHUNK_OVERLAP_WORDS = 50
@@ -182,16 +183,21 @@ async def upload_pdf(file: UploadFile = File(...)):
     return {"status": "uploaded_and_ingested", "filename": file.filename}
 
 
-# ---------- Ask endpoint ----------
+# ---------- Conversation endpoint ----------
 
-class AskRequest(BaseModel):
+# Store conversation history per user
+conversation_history = {}
+conversation_lock = Lock()
+
+class Conversation1(BaseModel):
+    user_id: str
     user_prompt: str
     top_k: int = 5
-    temperature: float = 0.2
+    temperature: float = 0.7
 
 
-@app.post("/ask")
-def ask(req: AskRequest):
+@app.post("/dontuseme")
+async def dontuseme(req: Conversation1):
     user_prompt = req.user_prompt.strip()
     if not user_prompt:
         raise HTTPException(status_code=400, detail="User prompt cannot be empty")
@@ -237,7 +243,7 @@ def ask(req: AskRequest):
 
     """
 
-    user_msg = f"Question: {user_prompt}\n\nContext:\n{context}\n\nPlease answer with step-by-step reasoning."
+    user_msg = f"Question: {user_prompt}\n\nContext:\n{context}\n\n."
 
     try:
         completion = client.chat.completions.create(
@@ -254,6 +260,133 @@ def ask(req: AskRequest):
         raise HTTPException(status_code=500, detail=f"LLM error: {e}")
 
     return {"answer": answer}
+
+
+class Conversation(BaseModel):
+    user_id: str   # <-- add user identifier
+    question: str
+    top_k: int = 5
+    temperature: float = 0.7
+
+@app.post("/conversation")
+def conversation(req: Conversation):
+    user_prompt = req.question.strip()
+    if not user_prompt:
+        raise HTTPException(status_code=400, detail="User prompt cannot be empty")
+
+    # Embed question
+    q_resp = client.embeddings.create(model=EMBEDDING_MODEL, input=user_prompt)
+    q_emb = q_resp.data[0].embedding
+
+    # Query Pinecone
+    results = index.query(vector=q_emb, top_k=req.top_k, include_metadata=True)
+    retrieved = [match["metadata"]["text"] for match in results["matches"]]
+
+    context = "\n\n".join(retrieved)
+
+    system_msg = """
+    You are an expert math tutor who can handle both problem-solving and concept explanations. Your role is to:
+
+    FOR PROBLEM-SOLVING QUESTIONS (like 'Solve 2x + 4 = 24'):
+    1. NEVER give the complete solution at once - break problems into logical steps
+    2. Ask questions to guide the student's thinking at each step
+    3. Wait for the student's response before moving forward
+    4. Confirm correctness and explain why each step works
+    5. Encourage the student to verify their answer by substitution at the end
+    6. Explain the purpose of each mathematical operation
+
+    FOR CONCEPT EXPLANATION QUESTIONS (like 'Explain trigonometry'):
+    1. Provide clear, comprehensive explanations with practical examples
+    2. Use simple language and relatable analogies
+    3. Include step-by-step examples to illustrate concepts
+    4. Ask if the student needs clarification on any part
+    5. Offer to work through specific problems related to the concept
+
+    GENERAL RULES:
+    - Keep a friendly, encouraging tone while being professional
+    - Do not, and never answer questions that are not math related.    
+    - Your responses should strictly be math based. 
+    - If the request is unclear or potentially harmful, respond with a polite message refusing to answer.
+    - Use proper markdown formatting for better readability
+    - If the question is unclear, or if you're not sure what the student wants, ask for clarification
+    - Keep responses conversational and focused on the student's needs
+    - When responding to LaTeX mathematical expressions (wrapped in $$), acknowledge the mathematical notation and work with it appropriately.
+
+    """
+    # --- Manage conversation history per user ---
+    with conversation_lock:
+        if req.user_id not in conversation_history:
+            conversation_history[req.user_id] = []
+
+        # Add the latest user message
+        conversation_history[req.user_id].append({"role": "user", "content": user_prompt})
+
+        # Build messages with history
+        messages = [{"role": "system", "content": system_msg}] + conversation_history[req.user_id]
+
+    try:
+        completion = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=messages + [{"role": "user", "content": f"{user_prompt}"}],
+            temperature=req.temperature,
+            max_tokens=1024
+        )
+        answer = completion.choices[0].message.content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM error: {e}")
+
+    # --- Save assistant reply back into history ---
+    with conversation_lock:
+        conversation_history[req.user_id].append({"role": "assistant", "content": answer})
+
+    return {"answer": answer}
+
+
+class GenerateQuestion(BaseModel):
+    system_prompt: str
+    user_prompt: str
+    top_k: int = 10
+    temperature: float = 0.5
+    
+
+@app.post("/generate")
+async def generate(req: GenerateQuestion):
+    system_prompt = req.system_prompt.strip()    
+    if not system_prompt:
+        raise HTTPException(status_code=400, detail="Syetem prompt cannot be empty")
+    
+    user_prompt = req.user_prompt.strip()
+    if not user_prompt:
+        raise HTTPException(status_code=400, detail="User prompt cannot be empty")
+    
+    # Embed question
+    q_resp = client.embeddings.create(model=EMBEDDING_MODEL, input=user_prompt)
+    q_emb = q_resp.data[0].embedding
+
+    # Query Pinecone
+    results = index.query(vector=q_emb, top_k=req.top_k, include_metadata=True)
+    retrieved = [match["metadata"]["text"] for match in results["matches"]]
+
+    context = "\n\n".join(retrieved)
+
+    user_msg = f"{user_prompt}\n\nContext:\n{context}"
+
+    try:
+        completion = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_msg}
+            ],
+            temperature=req.temperature,
+            max_tokens=1024
+        )
+        answer = completion.choices[0].message.content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM error: {e}")
+
+    return {"answer": answer}
+
 
 
 # ---------- Health ----------
