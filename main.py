@@ -16,6 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
 
+import requests
+from apscheduler.schedulers.background import BackgroundScheduler
+import atexit
+
 
 # ---------- Config ----------
 DOCUMENTS_DIR = "./documents"
@@ -455,6 +459,22 @@ async def generate_image(prompt_text):
 
 
 # ---------- Health ----------
+
+def scheduler_():
+    try:
+        resp = requests.get(os.environ.get("S_API_URL"), timeout=10)
+        print(f"API call status: {resp.status_code}, response: {resp.text[:100]}")
+    except Exception as e:
+        print(f"Error calling API: {e}")
+
+# Start scheduler when API boots
+scheduler = BackgroundScheduler()
+scheduler.add_job(scheduler_, "interval", minutes=10)
+scheduler.start()
+
+# Ensure scheduler shuts down gracefully
+atexit.register(lambda: scheduler.shutdown())
+
 
 @app.get("/health")
 def health():
