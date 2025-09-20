@@ -3,7 +3,6 @@ import os
 import fitz  # PyMuPDF
 from openai import OpenAI
 from pinecone import Pinecone
-# from sentence_transformers import SentenceTransformer
 import uuid
 from dotenv import load_dotenv
 

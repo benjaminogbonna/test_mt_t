@@ -338,7 +338,7 @@ def conversation(req: Conversation):
     # --- Save assistant reply back into history ---
     with conversation_lock:
         conversation_history[req.user_id].append({"role": "assistant", "content": answer})
-
+    # print(conversation_history)
     return {"answer": answer}
 
 
@@ -369,7 +369,7 @@ async def generate(req: GenerateQuestion):
 
     context = "\n\n".join(retrieved)
 
-    user_msg = f"{user_prompt}\n\nContext:\n{context}"
+    user_msg = f"{user_prompt}\n\nContext:\n{context}.\n\n Make sure to generate questions based only on the given context, and not just genneral question."
 
     try:
         completion = client.chat.completions.create(
@@ -386,6 +386,71 @@ async def generate(req: GenerateQuestion):
         raise HTTPException(status_code=500, detail=f"LLM error: {e}")
 
     return {"answer": answer}
+
+
+
+class StudyPlanRequest(BaseModel):
+    user_prompt: str
+    temperature: float = 0.7
+
+
+@app.post("/study-plan")
+async def study_plan(req: StudyPlanRequest):
+    user_prompt = req.user_prompt.strip()
+    if not user_prompt:
+        raise HTTPException(status_code=400, detail="User prompt cannot be empty")
+    
+    system_msg = """
+    You are a friendly expert math tutor who can handle both problem-solving and concept explanations. 
+    When explaining, consider the student's background, interests, and learning style. 
+    Provide step-by-step explanations and examples that relate to their context.
+    
+    FOR PROBLEM-SOLVING QUESTIONS:
+    1. NEVER give the complete solution at once - break problems into logical steps
+    6. Explain the purpose of each mathematical operation
+
+    FOR CONCEPT EXPLANATION QUESTIONS:
+    1. Provide clear, comprehensive explanations with practical examples
+    2. Use simple language and relatable analogies
+    3. Include step-by-step examples to illustrate concepts
+
+    GENERAL RULES:
+    - Keep a friendly, encouraging tone while being professional   
+    - If the request is unclear or potentially harmful, respond with a polite message refusing to answer.
+    - Use proper markdown formatting for better readability
+    - Keep responses conversational and focused on the student's needs and interests
+    - When responding to LaTeX mathematical expressions (wrapped in $$), acknowledge the mathematical notation and work with it appropriately.
+
+    """
+
+    
+    try:
+        completion = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=req.temperature,
+            max_tokens=1024
+        )
+        answer = completion.choices[0].message.content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM error: {e}")
+
+    return {"study_plan": answer}
+
+
+# not needed at the moment
+@app.post("/generate_image")
+async def generate_image(prompt_text):
+    response = openai.images.generate(
+        model="dall-e-3",
+        prompt=prompt_text,
+        n=1,
+        size="1024x1024"
+    )
+    return response.data[0].url
 
 
 

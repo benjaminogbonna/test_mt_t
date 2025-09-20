@@ -1,5 +1,6 @@
 #faiss-cpu==1.12.0
 fastapi==0.116.1
+#gunicorn
 numpy==2.2.6
 openai==1.107.2
 pinecone==7.3.0
