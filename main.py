@@ -2,7 +2,9 @@ import os
 import glob
 import pickle
 import time
+import json
 import math
+import random
 from threading import Lock
 from typing import List, Dict, Any
 from dotenv import load_dotenv
@@ -39,7 +41,7 @@ load_dotenv()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
 PINECONE_ENV = os.environ.get("PINECONE_ENV", "us-east-1")
-INDEX_NAME = os.environ.get("PINECONE_INDEX", "math-tutor-index")
+INDEX_NAME = os.environ.get("PINECONE_INDEX", "math-tutor-index3")
 
 
 if not OPENAI_API_KEY:
@@ -346,18 +348,17 @@ def conversation(req: Conversation):
     return {"answer": answer}
 
 
-class GenerateQuestion(BaseModel):
-    system_prompt: str
+class GenerateQuestion2(BaseModel):
     user_prompt: str
-    top_k: int = 10
+    top_k: int = 50
     temperature: float = 0.5
     
 
-@app.post("/generate")
-async def generate(req: GenerateQuestion):
-    system_prompt = req.system_prompt.strip()    
-    if not system_prompt:
-        raise HTTPException(status_code=400, detail="Syetem prompt cannot be empty")
+@app.post("/generate_old")
+async def generate_old(req: GenerateQuestion2):
+    # system_prompt = req.system_prompt.strip()    
+    # if not system_prompt:
+    #     raise HTTPException(status_code=400, detail="Syetem prompt cannot be empty")
     
     user_prompt = req.user_prompt.strip()
     if not user_prompt:
@@ -373,14 +374,15 @@ async def generate(req: GenerateQuestion):
 
     context = "\n\n".join(retrieved)
 
-    user_msg = f"{user_prompt}\n\nContext:\n{context}.\n\n Make sure to generate questions based only on the given context, and not just genneral question."
-
+    # user_msg = f"{user_prompt}\n\nContext:\n{context}.\n\n Make sure to generate questions only from the given context."
+    
+    system_prompt += f"\nMake sure to generate all questions from the given data.\n\n Data: \n{context}."
     try:
         completion = client.chat.completions.create(
             model=LLM_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_msg}
+                {"role": "user", "content": user_prompt}
             ],
             temperature=req.temperature,
             max_tokens=1024
@@ -455,6 +457,63 @@ async def generate_image(prompt_text):
         size="1024x1024"
     )
     return response.data[0].url
+
+
+# __________________new api for question generation.
+class GenerateQuestion(BaseModel): 
+    system_prompt: str
+    user_prompt: str
+    num_questions: int = 20
+    temperature: float = 0.7
+
+@app.post("/generate")
+async def generate(req: GenerateQuestion):
+    user_prompt = req.user_prompt.strip()
+    if not user_prompt:
+        raise HTTPException(status_code=400, detail="User prompt cannot be empty")
+
+    system_prompt = req.system_prompt.strip()
+    if not system_prompt:
+        raise HTTPException(status_code=400, detail="system prompt cannot be empty")
+    
+    ids_file = "ids.json"
+    if not os.path.exists(ids_file):
+        raise HTTPException(status_code=500, detail="ids.json not found. Run ingestion first.")
+
+    with open(ids_file, "r") as f:
+        all_ids = json.load(f)
+
+    if len(all_ids) < req.num_questions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only {len(all_ids)} questions available, but {req.num_questions} requested."
+        )
+
+    sampled_ids = random.sample(all_ids, req.num_questions)
+
+    fetched = index.fetch(ids=sampled_ids)
+    retrieved = [item["metadata"]["text"] for item in fetched.vectors.values()]
+
+    context = "\n\n".join(retrieved)
+
+    system_prompt += f"""\nYou may rephrase them slightly for clarity, but do not invent new ones.\n
+    Make sure to return/generate all questions from the given questions below.\n Questions: \n{context}."""
+    
+    try:
+        completion = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=req.temperature,
+            max_tokens=1500
+        )
+        answer = completion.choices[0].message.content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM error: {e}")
+
+    return {"answer": answer}
 
 
 
